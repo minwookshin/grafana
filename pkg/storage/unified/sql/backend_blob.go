@@ -19,7 +19,29 @@ import (
 
 var (
 	_ resource.BlobSupport = (*backend)(nil)
+	_ resource.BlobSupport = (*blobStore)(nil)
 )
+
+type blobStore struct {
+	db      db.DB
+	dialect sqltemplate.Dialect
+}
+
+func NewBlobStore(db db.DB, dialect sqltemplate.Dialect) resource.BlobSupport {
+	return &blobStore{db: db, dialect: dialect}
+}
+
+func NewBlobStoreFromProvider(ctx context.Context, provider db.DBProvider) (resource.BlobSupport, error) {
+	dbConn, err := provider.Init(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("error initializing DB: %w", err)
+	}
+	dialect := sqltemplate.DialectForDriver(dbConn.DriverName())
+	if dialect == nil {
+		return nil, fmt.Errorf("unsupported database driver: %s", dbConn.DriverName())
+	}
+	return NewBlobStore(dbConn, dialect), nil
+}
 
 func (b *backend) SupportsSignedURLs() bool {
 	b.logCall("SupportsSignedURLs")
@@ -28,6 +50,19 @@ func (b *backend) SupportsSignedURLs() bool {
 
 func (b *backend) PutResourceBlob(ctx context.Context, req *resourcepb.PutBlobRequest) (*resourcepb.PutBlobResponse, error) {
 	b.logCall("PutResourceBlob")
+	return (&blobStore{db: b.db, dialect: b.dialect}).PutResourceBlob(ctx, req)
+}
+
+func (b *backend) GetResourceBlob(ctx context.Context, key *resourcepb.ResourceKey, info *utils.BlobInfo, mustProxy bool) (*resourcepb.GetBlobResponse, error) {
+	b.logCall("GetResourceBlob")
+	return (&blobStore{db: b.db, dialect: b.dialect}).GetResourceBlob(ctx, key, info, mustProxy)
+}
+
+func (b *blobStore) SupportsSignedURLs() bool {
+	return false
+}
+
+func (b *blobStore) PutResourceBlob(ctx context.Context, req *resourcepb.PutBlobRequest) (*resourcepb.PutBlobResponse, error) {
 	ctx, span := tracer.Start(ctx, "sql.backend.PutResourceBlob")
 	defer span.End()
 
@@ -83,8 +118,7 @@ func (b *backend) PutResourceBlob(ctx context.Context, req *resourcepb.PutBlobRe
 	}, nil
 }
 
-func (b *backend) GetResourceBlob(ctx context.Context, key *resourcepb.ResourceKey, info *utils.BlobInfo, mustProxy bool) (*resourcepb.GetBlobResponse, error) {
-	b.logCall("GetResourceBlob")
+func (b *blobStore) GetResourceBlob(ctx context.Context, key *resourcepb.ResourceKey, info *utils.BlobInfo, mustProxy bool) (*resourcepb.GetBlobResponse, error) {
 	ctx, span := tracer.Start(ctx, "sql.backend.GetResourceBlob")
 	defer span.End()
 

@@ -261,9 +261,15 @@ func newClient(opts options.StorageOptions,
 			}
 		}
 
+		blobBackend, err := sql.NewBlobStoreFromProvider(ctx, eDB)
+		if err != nil {
+			return nil, err
+		}
+
 		serverOptions := sql.ServerOptions{
 			WatchExpiry:    watchExpiry,
 			Backend:        backend,
+			BlobBackend:    blobBackend,
 			VectorBackend:  vectorBackend,
 			Embedder:       embedderInstance,
 			Reranker:       rerankerInstance,
@@ -493,10 +499,10 @@ func GrpcConn(address string, reg prometheus.Registerer) (*grpc.ClientConn, erro
 // and middleware.StreamClientUserHeaderInterceptor as we don't need them.
 func instrument(requestDuration *prometheus.HistogramVec, instrumentationLabelOptions ...middleware.InstrumentationOption) ([]grpc.UnaryClientInterceptor, []grpc.StreamClientInterceptor) {
 	return []grpc.UnaryClientInterceptor{
-		middleware.UnaryClientInstrumentInterceptor(requestDuration, instrumentationLabelOptions...),
-	}, []grpc.StreamClientInterceptor{
-		middleware.StreamClientInstrumentInterceptor(requestDuration, instrumentationLabelOptions...),
-	}
+			middleware.UnaryClientInstrumentInterceptor(requestDuration, instrumentationLabelOptions...),
+		}, []grpc.StreamClientInterceptor{
+			middleware.StreamClientInstrumentInterceptor(requestDuration, instrumentationLabelOptions...),
+		}
 }
 
 func newClientMetrics(reg prometheus.Registerer) *clientMetrics {
