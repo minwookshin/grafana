@@ -12,7 +12,7 @@ import (
 	"github.com/grafana/grafana/pkg/storage/unified/resourcepb"
 )
 
-const dashboardBlobAnnotation = "blob.grafana.app/dashboard"
+const dashboardBlobAnnotation = resource.BlobAnnotationPrefix + "dashboard"
 
 func snapshotBlobKey(snap *dashv0.Snapshot) *resourcepb.ResourceKey {
 	return &resourcepb.ResourceKey{

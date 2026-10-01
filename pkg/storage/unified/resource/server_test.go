@@ -3181,6 +3181,7 @@ func TestFolderDeletePermissionChecks(t *testing.T) {
 // assert that the authz gate short-circuits or delegates.
 type stubBlobSupport struct {
 	putReached bool
+	getReached bool
 }
 
 func (s *stubBlobSupport) SupportsSignedURLs() bool { return false }
@@ -3191,6 +3192,7 @@ func (s *stubBlobSupport) PutResourceBlob(_ context.Context, _ *resourcepb.PutBl
 }
 
 func (s *stubBlobSupport) GetResourceBlob(_ context.Context, _ *resourcepb.ResourceKey, _ *utils.BlobInfo, _ bool) (*resourcepb.GetBlobResponse, error) {
+	s.getReached = true
 	return &resourcepb.GetBlobResponse{}, nil
 }
 
@@ -3460,6 +3462,75 @@ func TestGetBlob_RejectsMissingResourceKey(t *testing.T) {
 	rsp, err := srv.GetBlob(ctxWithUserInNs("org-1"), &resourcepb.GetBlobRequest{Uid: "blob-uid"})
 	require.NoError(t, err)
 	require.Equal(t, int32(http.StatusBadRequest), rsp.Error.Code)
+}
+
+func TestGetBlobReferenceChecks(t *testing.T) {
+	const namespace = "default"
+	key := &resourcepb.ResourceKey{Group: "playlist.grafana.app", Resource: "playlists", Namespace: namespace, Name: "test-resource"}
+	ctx := ctxWithUserInNs(namespace)
+	playlist := func(annotations string) []byte {
+		return []byte(`{"apiVersion":"playlist.grafana.app/v0alpha1","kind":"Playlist","metadata":{"name":"test-resource","namespace":"default","annotations":{` + annotations + `}},"spec":{"title":"t","interval":"5m","items":[]}}`)
+	}
+	create := func(t *testing.T, srv *server, annotations string) int64 {
+		t.Helper()
+		rsp, err := srv.Create(ctx, &resourcepb.CreateRequest{Key: key, Value: playlist(annotations)})
+		require.NoError(t, err)
+		require.Nil(t, rsp.Error)
+		return rsp.ResourceVersion
+	}
+	getBlob := func(t *testing.T, srv *server, req *resourcepb.GetBlobRequest) *resourcepb.GetBlobResponse {
+		t.Helper()
+		rsp, err := srv.GetBlob(ctx, req)
+		require.NoError(t, err)
+		return rsp
+	}
+
+	t.Run("rejects a request without a resource name", func(t *testing.T) {
+		srv, _, blob := newBlobAuthzTestServer(t, nil)
+		noName := &resourcepb.ResourceKey{Group: key.Group, Resource: key.Resource, Namespace: namespace}
+		rsp := getBlob(t, srv, &resourcepb.GetBlobRequest{Resource: noName, Uid: "blob-a"})
+		require.Equal(t, int32(http.StatusBadRequest), rsp.Error.Code)
+		require.False(t, blob.getReached)
+	})
+
+	t.Run("returns a blob the resource references", func(t *testing.T) {
+		srv, _, blob := newBlobAuthzTestServer(t, nil)
+		create(t, srv, `"blob.grafana.app/dashboard":"blob-a"`)
+		rsp := getBlob(t, srv, &resourcepb.GetBlobRequest{Resource: key, Uid: "blob-a"})
+		require.Nil(t, rsp.Error)
+		require.True(t, blob.getReached)
+	})
+
+	t.Run("rejects a blob the resource does not reference", func(t *testing.T) {
+		srv, _, blob := newBlobAuthzTestServer(t, nil)
+		create(t, srv, `"blob.grafana.app/dashboard":"blob-a"`)
+		rsp := getBlob(t, srv, &resourcepb.GetBlobRequest{Resource: key, Uid: "blob-b"})
+		require.Equal(t, int32(http.StatusNotFound), rsp.Error.Code)
+		require.False(t, blob.getReached)
+	})
+
+	t.Run("allows any blob when the resource has no blob annotations", func(t *testing.T) {
+		srv, _, blob := newBlobAuthzTestServer(t, nil)
+		create(t, srv, `"grafana.app/blob":"blob-a"`)
+		rsp := getBlob(t, srv, &resourcepb.GetBlobRequest{Resource: key, Uid: "blob-b"})
+		require.Nil(t, rsp.Error)
+		require.True(t, blob.getReached)
+	})
+
+	t.Run("returns a blob referenced by the requested older version", func(t *testing.T) {
+		srv, _, blob := newBlobAuthzTestServer(t, nil)
+		rv := create(t, srv, `"blob.grafana.app/dashboard":"blob-a"`)
+		updated, err := srv.Update(ctx, &resourcepb.UpdateRequest{Key: key, Value: playlist(`"blob.grafana.app/dashboard":"blob-b"`), ResourceVersion: rv})
+		require.NoError(t, err)
+		require.Nil(t, updated.Error)
+
+		rsp := getBlob(t, srv, &resourcepb.GetBlobRequest{Resource: key, Uid: "blob-a"})
+		require.Equal(t, int32(http.StatusNotFound), rsp.Error.Code)
+
+		rsp = getBlob(t, srv, &resourcepb.GetBlobRequest{Resource: key, Uid: "blob-a", ResourceVersion: rv})
+		require.Nil(t, rsp.Error)
+		require.True(t, blob.getReached)
+	})
 }
 
 func TestClassifyAuthError(t *testing.T) {

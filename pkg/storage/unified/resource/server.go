@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"iter"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -2867,6 +2868,12 @@ func (s *server) GetBlob(ctx context.Context, req *resourcepb.GetBlobRequest) (*
 	if errRes := requireUserNamespace(ctx, req.Resource.Namespace); errRes != nil {
 		return &resourcepb.GetBlobResponse{Error: errRes}, nil
 	}
+	if req.Resource.Name == "" {
+		return &resourcepb.GetBlobResponse{Error: &resourcepb.ErrorResult{
+			Message: "missing resource name",
+			Code:    http.StatusBadRequest,
+		}}, nil
+	}
 	if s.blob == nil {
 		return &resourcepb.GetBlobResponse{Error: &resourcepb.ErrorResult{
 			Message: "blob store not configured",
@@ -2890,6 +2897,16 @@ func (s *server) GetBlob(ctx context.Context, req *resourcepb.GetBlobRequest) (*
 			}}, nil
 		}
 	} else {
+		obj, status := s.getPartialObject(ctx, req.Resource, req.ResourceVersion)
+		if status != nil {
+			return &resourcepb.GetBlobResponse{Error: status}, nil
+		}
+		if refs := blobReferences(obj); len(refs) > 0 && !refs[req.Uid] {
+			return &resourcepb.GetBlobResponse{Error: &resourcepb.ErrorResult{
+				Message: "blob is not referenced by the resource",
+				Code:    http.StatusNotFound,
+			}}, nil
+		}
 		info = &utils.BlobInfo{UID: req.Uid}
 	}
 
@@ -2898,6 +2915,21 @@ func (s *server) GetBlob(ctx context.Context, req *resourcepb.GetBlobRequest) (*
 		rsp.Error = AsErrorResult(err)
 	}
 	return rsp, nil
+}
+
+const BlobAnnotationPrefix = "blob.grafana.app/"
+
+func blobReferences(obj utils.GrafanaMetaAccessor) map[string]bool {
+	refs := map[string]bool{}
+	for k, v := range obj.GetAnnotations() {
+		if !strings.HasPrefix(k, BlobAnnotationPrefix) {
+			continue
+		}
+		if info := utils.ParseBlobInfo(v); info != nil && info.UID != "" {
+			refs[info.UID] = true
+		}
+	}
+	return refs
 }
 
 func (s *server) runInQueue(ctx context.Context, tenantID string, runnable func(ctx context.Context)) error {
